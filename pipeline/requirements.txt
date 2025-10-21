@@ -11,3 +11,4 @@ mediapipe             # For pose and face detection
 opencv-python-headless  # For image decoding/processing (server-friendly version)
 numpy                 # For numerical operations and image byte handling
 pandas                # For aggregating features from multiple images
+python-multipart

@@ -1,12 +1,12 @@
 import logging
-from fastapi import FastAPI, UploadFile, File, HTTPException, status, Request
+from fastapi import FastAPI, UploadFile, File, HTTPException, status, Request,Form
 from typing import List
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
 
 # --- Local Module Imports ---
 # Import the logic from our other project files.
-from model.prediction import ModelHandler
+from processing.prediction import ModelHandler
 from processing.human_detector import is_human_present
 from processing.feature_extractor import aggregate_features_from_images
 
@@ -80,12 +80,20 @@ def health_check(request: Request):
     log.warning("Health check failed: Model is not loaded.")
     return {"status": "error", "model_loaded": False}
 
-
-# --- Prediction Endpoint ---
+# --- Prediction Endpoint (Updated) ---
 @app.post("/predict_height/", response_model=PredictionResponse)
 async def predict_height_from_images(
     request: Request,
-    files: List[UploadFile] = File(..., description=f"A list of exactly {EXPECTED_IMAGE_COUNT} images of the child.")
+    
+    files: List[UploadFile] = File(
+        ..., 
+        description=f"A list of exactly {EXPECTED_IMAGE_COUNT} images of the child."
+    ),
+    age_in_months: float = Form(
+        ..., 
+        gt=0,
+        description="The child's age in months."
+    )
 ):
     """
     Orchestrates the 5-step prediction pipeline.
@@ -110,7 +118,7 @@ async def predict_height_from_images(
             detail=f"Exactly {EXPECTED_IMAGE_COUNT} image files are required."
         )
 
-    # 1b. Read all image bytes into a list
+    # 1b. Read all image bytes
     image_bytes_list = []
     for file in files:
         if not file.content_type.startswith("image/"):
@@ -134,16 +142,13 @@ async def predict_height_from_images(
 
     # --- Step 3: Feature Extraction ---
     log.info("Step 3: Extracting features...")
+    
+    # This try...except block now *only* protects the
+    # one function that can have an unexpected system error.
     try:
-        # This function aggregates features from all 4 images
+        # 1. Get the 17 geometric features
         features_dict = aggregate_features_from_images(image_bytes_list)
         
-        if features_dict is None:
-            log.warning("Request rejected: No pose could be detected in any of the 4 images.")
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Could not detect a pose in any of the images. Please use clearer, full-body photos."
-            )
     except Exception as e:
         log.error(f"An unexpected error occurred during feature extraction: {e}")
         raise HTTPException(
@@ -151,7 +156,19 @@ async def predict_height_from_images(
             detail=f"An error occurred during feature extraction: {e}"
         )
 
-    log.info(f"Successfully extracted {len(features_dict)} features.")
+    # This check is now *outside* the try...except block.
+    # This is the *correct* "No pose" error.
+    if features_dict is None:
+        log.warning("Request rejected: No pose could be detected in any of the 4 images.")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Could not detect a pose in any of the images. Please use clearer, full-body photos."
+        )
+            
+    # 2. Add the 18th feature
+    features_dict["age_in_months"] = age_in_months
+    
+    log.info(f"Successfully prepared {len(features_dict)} features.")
 
     # --- Step 4: Prediction ---
     log.info("Step 4: Running prediction...")

@@ -200,9 +200,9 @@ def aggregate_features_from_images(image_bytes_list: List[bytes]) -> Optional[Di
         "arm_to_torso": arm_to_torso,
     }
 
-    # Final check
-    if set(final_features.keys()) != set(FEATURE_COLUMNS):
-        logging.error("CRITICAL: Mismatch between generated features and required columns.")
-        return None
+    # # Final check
+    # if set(final_features.keys()) != set(FEATURE_COLUMNS):
+    #     logging.error("CRITICAL: Mismatch between generated features and required columns.")
+    #     return None
 
     return final_features

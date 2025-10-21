@@ -4,26 +4,25 @@ import logging
 from typing import Dict, List
 
 # --- Feature Order ---
-# This import is the *most critical* part of the file.
-# It guarantees that the features are fed into the model
-# in the exact same order it was trained on.
+# This is now the *single source of truth* for the model's input.
+# We hard-code the 18 features in the exact order the SVR was trained on.
+# The try...except block has been REMOVED.
 
-try:
-    # Import the single source of truth for feature names
-    from processing.feature_extractor import FEATURE_COLUMNS
-except ImportError:
-    logging.error("CRITICAL: Could not import FEATURE_COLUMNS from processing.feature_extractor.")
-    # As a fallback, hardcode. But this is a sign of a structural error.
-    FEATURE_COLUMNS = [
-        "max_torso_length", "avg_torso_length",
-        "max_leg_length", "avg_leg_length",
-        "max_arm_length", "avg_arm_length",
-        "max_head_to_shoulder", "avg_head_to_shoulder",
-        "max_shoulder_width", "avg_shoulder_width",
-        "max_hip_width", "avg_hip_width",
-        "max_head_width", "avg_head_width",
-        "hip_to_shoulder", "torso_to_leg", "arm_to_torso"
-    ]
+FEATURE_COLUMNS: List[str] = [
+    "age_in_months",  # The 1st feature
+    
+    # The 17 geometric features
+    "max_torso_length", "avg_torso_length",
+    "max_leg_length", "avg_leg_length",
+    "max_arm_length", "avg_arm_length",
+    "max_head_to_shoulder", "avg_head_to_shoulder",
+    "max_shoulder_width", "avg_shoulder_width",
+    "max_hip_width", "avg_hip_width",
+    "max_head_width", "avg_head_width",
+    "hip_to_shoulder",
+    "torso_to_leg",
+    "arm_to_torso"
+]
 
 
 class ModelHandler:
@@ -43,16 +42,18 @@ class ModelHandler:
             model_path: The file path to the .pkl model file.
         """
         self.model = None
+        # This will now *always* use the 18-feature list defined above
         self.feature_order: List[str] = FEATURE_COLUMNS
         
         try:
             self.model = joblib.load(model_path)
             logging.info(f"SVR model loaded successfully from {model_path}")
-            logging.info(f"Model expected {len(self.feature_order)} features.")
+            
+            # This log will now correctly state 18 features
+            logging.info(f"Model expected {len(self.feature_order)} features.") 
             
         except FileNotFoundError:
             logging.error(f"CRITICAL: Model file not found at {model_path}")
-            # The app will be in a failed state, which main.py will handle.
         except Exception as e:
             logging.error(f"CRITICAL: Error loading model from {model_path}: {e}")
             
@@ -77,25 +78,23 @@ class ModelHandler:
             raise RuntimeError("Model is not loaded. Check application logs for initialization errors.")
 
         # --- Feature Dictionary to Array Conversion ---
-        # 1. Create a list of feature values, ordered *exactly*
-        #    by self.feature_order.
         try:
+            # This will now loop over the 18-item list
             ordered_features = [features_dict[col] for col in self.feature_order]
         except KeyError as e:
+            # This error will fire if 'age_in_months' is missing
             logging.error(f"Prediction failed: Missing feature in input dictionary: {e}")
             raise ValueError(f"Missing required feature for prediction: {e}")
 
         # 2. Convert the list into a 2D NumPy array.
-        #    Scikit-learn models expect a 2D array: [[f1, f2, ..., f17]]
+        #    This will now correctly be a (1, 18) shape array
         input_data = np.array([ordered_features])
 
         # 3. Run the prediction
         try:
             prediction = self.model.predict(input_data)
             
-            # 4. Return the result as a single float
-            #    .predict() returns an array (e.g., np.array([97.5])),
-            #    so we extract the first (and only) element.
+            # 4. Return the result
             return float(prediction[0])
             
         except Exception as e:
