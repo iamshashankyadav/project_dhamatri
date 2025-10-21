@@ -1,0 +1,172 @@
+import logging
+from fastapi import FastAPI, UploadFile, File, HTTPException, status, Request
+from typing import List
+from pydantic import BaseModel
+from contextlib import asynccontextmanager
+
+# --- Local Module Imports ---
+# Import the logic from our other project files.
+from model.prediction import ModelHandler
+from processing.human_detector import is_human_present
+from processing.feature_extractor import aggregate_features_from_images
+
+# --- Configuration ---
+MODEL_PATH = "model/final_svr_height_predictor.pkl"
+EXPECTED_IMAGE_COUNT = 4  # As per your multi-image training logic
+
+# --- Logging ---
+# Set up basic logging to see app activity
+logging.basicConfig(level=logging.INFO)
+# Use the Uvicorn logger
+log = logging.getLogger("uvicorn.error")
+
+# --- Model Loading (Lifespan Event) ---
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Manages the application's startup and shutdown events.
+    Loads the ML model on startup and stores it in app.state.
+    """
+    log.info("Application starting up...")
+    
+    # 1. Load the SVR model
+    model_handler_instance = ModelHandler(MODEL_PATH)
+    
+    # 2. Check if model loaded successfully
+    if model_handler_instance.model is None:
+        log.critical(f"Model from {MODEL_PATH} failed to load. API will be non-functional.")
+        # Store None to indicate failure
+        app.state.model_handler = None
+    else:
+        log.info("SVR model loaded successfully.")
+        # 3. Store the handler in the app's state
+        app.state.model_handler = model_handler_instance
+    
+    yield
+    
+    # --- Shutdown ---
+    log.info("Application shutting down...")
+    app.state.model_handler = None # Clear the state
+
+
+# --- FastAPI App Initialization ---
+app = FastAPI(
+    title="Child Height Predictor API",
+    description=f"Predicts child height from {EXPECTED_IMAGE_COUNT} images using an SVR model.",
+    version="1.0.0",
+    lifespan=lifespan # Use the lifespan manager
+)
+
+
+# --- Pydantic Response Model ---
+class PredictionResponse(BaseModel):
+    """
+    Defines the JSON structure for a successful prediction.
+    """
+    predicted_height_cm: float
+
+
+# --- Health Check Endpoint ---
+@app.get("/health", status_code=status.HTTP_200_OK)
+def health_check(request: Request):
+    """
+    Simple health check to verify the app is running and the model is loaded.
+    """
+    model_handler = request.app.state.model_handler
+    if model_handler and model_handler.model:
+        return {"status": "ok", "model_loaded": True}
+    
+    log.warning("Health check failed: Model is not loaded.")
+    return {"status": "error", "model_loaded": False}
+
+
+# --- Prediction Endpoint ---
+@app.post("/predict_height/", response_model=PredictionResponse)
+async def predict_height_from_images(
+    request: Request,
+    files: List[UploadFile] = File(..., description=f"A list of exactly {EXPECTED_IMAGE_COUNT} images of the child.")
+):
+    """
+    Orchestrates the 5-step prediction pipeline.
+    """
+    
+    # --- Step 0: Check Model State ---
+    model_handler = request.app.state.model_handler
+    if not model_handler or not model_handler.model:
+        log.error("Prediction failed: Model is not loaded.")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Model is not loaded. Please contact the administrator."
+        )
+
+    # --- Step 1: Orchestration & Input Validation ---
+    
+    # 1a. Check image count
+    if len(files) != EXPECTED_IMAGE_COUNT:
+        log.warning(f"Request rejected: Received {len(files)} images, expected {EXPECTED_IMAGE_COUNT}.")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Exactly {EXPECTED_IMAGE_COUNT} image files are required."
+        )
+
+    # 1b. Read all image bytes into a list
+    image_bytes_list = []
+    for file in files:
+        if not file.content_type.startswith("image/"):
+             raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"File '{file.filename}' is not a valid image type."
+            )
+        image_bytes_list.append(await file.read())
+
+    # --- Step 2: Validation (Human Detector) ---
+    log.info("Step 2: Validating images for human presence...")
+    for i, img_bytes in enumerate(image_bytes_list):
+        if not is_human_present(img_bytes):
+            log.warning(f"Request rejected: No human detected in image {i+1} ('{files[i].filename}').")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"No human was detected in image '{files[i].filename}'. Please upload 4 clear images."
+            )
+    
+    log.info(f"All {EXPECTED_IMAGE_COUNT} images passed human detection.")
+
+    # --- Step 3: Feature Extraction ---
+    log.info("Step 3: Extracting features...")
+    try:
+        # This function aggregates features from all 4 images
+        features_dict = aggregate_features_from_images(image_bytes_list)
+        
+        if features_dict is None:
+            log.warning("Request rejected: No pose could be detected in any of the 4 images.")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Could not detect a pose in any of the images. Please use clearer, full-body photos."
+            )
+    except Exception as e:
+        log.error(f"An unexpected error occurred during feature extraction: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"An error occurred during feature extraction: {e}"
+        )
+
+    log.info(f"Successfully extracted {len(features_dict)} features.")
+
+    # --- Step 4: Prediction ---
+    log.info("Step 4: Running prediction...")
+    try:
+        predicted_height = model_handler.predict(features_dict)
+    
+    except (RuntimeError, ValueError) as e:
+        # These errors are raised by our ModelHandler
+        log.error(f"Prediction failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Model prediction failed: {e}"
+        )
+    
+    log.info(f"Prediction successful. Result: {predicted_height:.2f} cm")
+
+    # --- Step 5: Format and Return Response ---
+    return PredictionResponse(predicted_height_cm=predicted_height)

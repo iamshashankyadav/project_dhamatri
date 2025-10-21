@@ -1,0 +1,13 @@
+# --- API Framework ---
+fastapi
+uvicorn[standard]     # ASGI server with standard extras (includes python-multipart)
+
+# --- ML & Model ---
+scikit-learn          # Required to unpickle and run the SVR model
+joblib                # For loading the .pkl model file
+
+# --- Image & Feature Processing ---
+mediapipe             # For pose and face detection
+opencv-python-headless  # For image decoding/processing (server-friendly version)
+numpy                 # For numerical operations and image byte handling
+pandas                # For aggregating features from multiple images
