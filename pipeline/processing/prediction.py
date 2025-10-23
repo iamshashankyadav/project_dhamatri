@@ -4,14 +4,16 @@ import logging
 from typing import Dict, List
 
 # --- Feature Order ---
-# This is now the *single source of truth* for the model's input.
-# We hard-code the 18 features in the exact order the SVR was trained on.
-# The try...except block has been REMOVED.
+# This is the single source of truth, now 19 features.
+# I am assuming the order is [gender, age_in_months, ...17_geometric...],
+# which is typical for how training data is structured.
 
 FEATURE_COLUMNS: List[str] = [
-    "age_in_months",  # The 1st feature
+    # --- New 19-feature list ---
+    "gender",         # The 19th feature (encoded as 0 or 1)
+    "age_in_months",  # The 18th feature
     
-    # The 17 geometric features
+    # --- The 17 geometric features ---
     "max_torso_length", "avg_torso_length",
     "max_leg_length", "avg_leg_length",
     "max_arm_length", "avg_arm_length",
@@ -28,28 +30,21 @@ FEATURE_COLUMNS: List[str] = [
 class ModelHandler:
     """
     A class to load the SVR model and handle predictions.
-    
-    This wrapper class ensures the model is:
-    1. Loaded only once on application startup.
-    2. Correctly formats the input data for prediction.
     """
     
     def __init__(self, model_path: str):
         """
         Initializes the handler by loading the SVR model.
-        
-        Args:
-            model_path: The file path to the .pkl model file.
         """
         self.model = None
-        # This will now *always* use the 18-feature list defined above
+        # This will now *always* use the 19-feature list defined above
         self.feature_order: List[str] = FEATURE_COLUMNS
         
         try:
             self.model = joblib.load(model_path)
             logging.info(f"SVR model loaded successfully from {model_path}")
             
-            # This log will now correctly state 18 features
+            # This log will now correctly state 19 features
             logging.info(f"Model expected {len(self.feature_order)} features.") 
             
         except FileNotFoundError:
@@ -60,17 +55,6 @@ class ModelHandler:
     def predict(self, features_dict: Dict[str, float]) -> float:
         """
         Runs a prediction using the loaded SVR model.
-        
-        Args:
-            features_dict: A dictionary of {feature_name: value}
-                           as provided by the feature_extractor.
-
-        Returns:
-            The predicted height as a single float.
-            
-        Raises:
-            RuntimeError: If the model is not loaded.
-            ValueError: If a required feature is missing.
         """
         
         if self.model is None:
@@ -79,15 +63,15 @@ class ModelHandler:
 
         # --- Feature Dictionary to Array Conversion ---
         try:
-            # This will now loop over the 18-item list
+            # This will now loop over the 19-item list
             ordered_features = [features_dict[col] for col in self.feature_order]
         except KeyError as e:
-            # This error will fire if 'age_in_months' is missing
+            # This error will fire if 'gender' or 'age_in_months' is missing
             logging.error(f"Prediction failed: Missing feature in input dictionary: {e}")
             raise ValueError(f"Missing required feature for prediction: {e}")
 
         # 2. Convert the list into a 2D NumPy array.
-        #    This will now correctly be a (1, 18) shape array
+        #    This will now correctly be a (1, 19) shape array
         input_data = np.array([ordered_features])
 
         # 3. Run the prediction
