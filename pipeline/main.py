@@ -11,7 +11,7 @@ from processing.human_detector import is_human_present
 from processing.feature_extractor import aggregate_features_from_images
 
 # --- Configuration ---
-MODEL_PATH = "model/final_svr_height_predictor.pkl"
+MODEL_PATH = "model/final_svr_height_predictor_with_gender.pkl"
 WEIGHT_ARTIFACT_PATH = "model/weight_model_artifacts.pkl"
 EXPECTED_IMAGE_COUNT = 4  # As per your multi-image training logic
 
@@ -105,7 +105,7 @@ def health_check(request: Request):
     log.warning("Health check failed: One or more models not loaded.")
     return {"status": "error", "height_model_loaded": height_ok, "weight_model_loaded": weight_ok}
 
-# --- Prediction Endpoint (Updated) ---
+# --- Prediction Endpoint (Updated for 19 Features) ---
 @app.post("/predict_height/", response_model=PredictionResponse)
 async def predict_height_from_images(
     request: Request,
@@ -118,6 +118,11 @@ async def predict_height_from_images(
         ..., 
         gt=0,
         description="The child's age in months."
+    ),
+    # --- ADDED GENDER FIELD ---
+    gender: str = Form(
+        ...,
+        description="The child's gender: 'm' (male) or 'f' (female)."
     )
 ):
     """
@@ -168,8 +173,6 @@ async def predict_height_from_images(
     # --- Step 3: Feature Extraction ---
     log.info("Step 3: Extracting features...")
     
-    # This try...except block now *only* protects the
-    # one function that can have an unexpected system error.
     try:
         # 1. Get the 17 geometric features
         features_dict = aggregate_features_from_images(image_bytes_list)
@@ -181,8 +184,7 @@ async def predict_height_from_images(
             detail=f"An error occurred during feature extraction: {e}"
         )
 
-    # This check is now *outside* the try...except block.
-    # This is the *correct* "No pose" error.
+    # Check for pose detection failure
     if features_dict is None:
         log.warning("Request rejected: No pose could be detected in any of the 4 images.")
         raise HTTPException(
@@ -190,10 +192,26 @@ async def predict_height_from_images(
             detail="Could not detect a pose in any of the images. Please use clearer, full-body photos."
         )
             
-    # 2. Add the 18th feature
+    # --- ADDED GENDER ENCODING ---
+    # 2. Validate and encode 'gender'
+    gender_norm = gender.lower().strip()
+    if gender_norm == 'm':
+        gender_encoded = 1
+    elif gender_norm == 'f':
+        gender_encoded = 0
+    else:
+        # If input is not 'm' or 'f', reject the request.
+        log.warning(f"Request rejected: Invalid gender input. Received '{gender}'.")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid gender value. Please use 'm' or 'f'."
+        )
+
+    # 3. Add the two label-encoded features
+    features_dict["gender"] = gender_encoded
     features_dict["age_in_months"] = age_in_months
     
-    log.info(f"Successfully prepared {len(features_dict)} features.")
+    log.info(f"Successfully prepared {len(features_dict)} features.") # Will now log 19
 
     # --- Step 4: Prediction ---
     log.info("Step 4: Running prediction...")
@@ -201,7 +219,6 @@ async def predict_height_from_images(
         predicted_height = model_handler.predict(features_dict)
     
     except (RuntimeError, ValueError) as e:
-        # These errors are raised by our ModelHandler
         log.error(f"Prediction failed: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
