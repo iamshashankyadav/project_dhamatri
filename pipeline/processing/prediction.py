@@ -100,3 +100,41 @@ class ModelHandler:
         except Exception as e:
             logging.error(f"Model .predict() method failed: {e}")
             raise RuntimeError(f"Model prediction failed: {e}")
+
+
+class WeightModelHandler:
+    """
+    Loads saved artifacts (scaler + linear model) and exposes a simple predict method.
+    The saved artifact should be a dict with keys: 'scaler' and 'model'
+    """
+    def __init__(self, artifact_path: str):
+        self.artifact_path = artifact_path
+        self.scaler = None
+        self.model = None
+        self._load()
+
+    def _load(self):
+        try:
+            data = joblib.load(self.artifact_path)
+            self.scaler = data.get("scaler")
+            self.model = data.get("model")
+        except Exception:
+            # keep as None on failure; caller (lifespan) will detect and log
+            self.scaler = None
+            self.model = None
+
+    def predict(self, height_cm: float, age_in_months: float, gender: str) -> float:
+        """
+        Predict weight in grams.
+        - gender: 'm' or 'f' (case-insensitive). Default behaviour: anything not starting with 'f' -> male (1).
+        """
+        if self.model is None or self.scaler is None:
+            raise RuntimeError("Weight model or scaler not loaded.")
+
+        # encode gender the same way you trained: f -> 0, m -> 1
+        g = (0 if str(gender).strip().lower().startswith("f") else 1)
+
+        X = np.array([[height_cm, age_in_months, g]], dtype=float)
+        X_scaled = self.scaler.transform(X)   # scaler must match training scaler
+        pred = self.model.predict(X_scaled)
+        return float(pred[0])
