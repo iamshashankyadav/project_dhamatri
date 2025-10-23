@@ -6,12 +6,13 @@ from contextlib import asynccontextmanager
 
 # --- Local Module Imports ---
 # Import the logic from our other project files.
-from processing.prediction import ModelHandler
+from processing.prediction import ModelHandler ,WeightModelHandler
 from processing.human_detector import is_human_present
 from processing.feature_extractor import aggregate_features_from_images
 
 # --- Configuration ---
 MODEL_PATH = "model/final_svr_height_predictor_with_gender.pkl"
+WEIGHT_ARTIFACT_PATH = "model/weight_model_artifacts.pkl"
 EXPECTED_IMAGE_COUNT = 4  # As per your multi-image training logic
 
 # --- Logging ---
@@ -42,12 +43,22 @@ async def lifespan(app: FastAPI):
         log.info("SVR model loaded successfully.")
         # 3. Store the handler in the app's state
         app.state.model_handler = model_handler_instance
+
+    # 2. Load the weight model artifacts (scaler + linear model)
+    weight_handler_instance = WeightModelHandler(WEIGHT_ARTIFACT_PATH)
+    if weight_handler_instance.model is None or getattr(weight_handler_instance, "scaler", None) is None:
+        log.critical(f"Weight model artifacts from {WEIGHT_ARTIFACT_PATH} failed to load.")
+        app.state.weight_handler = None
+    else:
+        log.info("Weight model loaded successfully.")
+        app.state.weight_handler = weight_handler_instance
     
     yield
     
     # --- Shutdown ---
     log.info("Application shutting down...")
-    app.state.model_handler = None # Clear the state
+    app.state.model_handler = None
+    app.state.weight_handler = None
 
 
 # --- FastAPI App Initialization ---
@@ -66,19 +77,33 @@ class PredictionResponse(BaseModel):
     """
     predicted_height_cm: float
 
+class WeightResponse(BaseModel):
+    """
+    Response model for weight prediction.
+    """
+    predicted_weight_grams: float
+
 
 # --- Health Check Endpoint ---
 @app.get("/health", status_code=status.HTTP_200_OK)
 def health_check(request: Request):
     """
-    Simple health check to verify the app is running and the model is loaded.
+    Simple health check to verify the app is running and the models are loaded.
     """
-    model_handler = request.app.state.model_handler
-    if model_handler and model_handler.model:
-        return {"status": "ok", "model_loaded": True}
-    
-    log.warning("Health check failed: Model is not loaded.")
-    return {"status": "error", "model_loaded": False}
+    model_handler = getattr(request.app.state, "model_handler", None)
+    weight_handler = getattr(request.app.state, "weight_handler", None)
+
+
+    height_ok = bool(model_handler and getattr(model_handler, "model", None))
+    weight_ok = bool(weight_handler and getattr(weight_handler, "model", None) and getattr(weight_handler, "scaler", None))
+
+
+    if height_ok and weight_ok:
+        return {"status": "ok", "height_model_loaded": True, "weight_model_loaded": True}
+
+
+    log.warning("Health check failed: One or more models not loaded.")
+    return {"status": "error", "height_model_loaded": height_ok, "weight_model_loaded": weight_ok}
 
 # --- Prediction Endpoint (Updated for 19 Features) ---
 @app.post("/predict_height/", response_model=PredictionResponse)
@@ -204,3 +229,30 @@ async def predict_height_from_images(
 
     # --- Step 5: Format and Return Response ---
     return PredictionResponse(predicted_height_cm=predicted_height)
+
+# --- Weight Prediction Endpoint (New) ---
+@app.post("/predict_weight/", response_model=WeightResponse)
+async def predict_weight_simple(
+    request: Request,
+    height_in_cm: float = Form(..., gt=0, description="Child's height in cm (predicted by height API or measured)."),
+    age_in_months: float = Form(..., gt=0, description="Child's age in months."),
+    gender: str = Form("m", description="Child's gender; defaults to 'm' if not provided.")
+):
+    """
+    Simple, decoupled weight prediction:
+    - All inputs are plain form fields.
+    - No image processing or height inference here.
+    """
+    weight_handler = getattr(request.app.state, "weight_handler", None)
+    if not weight_handler or weight_handler.model is None or getattr(weight_handler, "scaler", None) is None:
+        log.error("Weight prediction failed: weight model not loaded.")
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Weight model is not loaded.")
+
+
+    try:
+        predicted_weight = weight_handler.predict(height_in_cm, age_in_months, gender)
+    except Exception as e:
+        log.error(f"Weight prediction error: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Weight prediction failed: {e}")
+
+    return WeightResponse(predicted_weight_grams=predicted_weight) 

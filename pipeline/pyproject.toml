@@ -1,0 +1,17 @@
+[project]
+name = "pipeline"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.119.1",
+    "joblib>=1.5.2",
+    "mediapipe>=0.10.21",
+    "numpy>=1.26.4",
+    "opencv-python-headless>=4.11.0.86",
+    "pandas>=2.3.3",
+    "python-multipart>=0.0.20",
+    "scikit-learn>=1.7.2",
+    "uvicorn[standard]>=0.38.0",
+]
